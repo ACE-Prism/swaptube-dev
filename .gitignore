@@ -3,6 +3,7 @@ out
 media
 src/Projects/.active_project.cpp
 src/HIP
+src/CPU
 local.cmake
 local_override.cmake
 .vscode/

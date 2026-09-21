@@ -33,7 +33,7 @@ BeaverTNF3DScene::BeaverTNF3DScene(const vec2& dimension) {
 }
 
 int halt_trans(TuringMachine tm, int max_steps) {
-    int half_tape_length = 20;
+    constexpr int half_tape_length = 20;
     int tape[2 * half_tape_length + 1] = {0};
     int head_position = half_tape_length;
     int current_state = 0;

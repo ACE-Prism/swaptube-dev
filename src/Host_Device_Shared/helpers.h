@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include "math.h"
 #include <cmath>
-#include <sys/sysinfo.h>
 #include <iostream>
 #include <csignal>
 #include "shared_precompiler_directives.h"

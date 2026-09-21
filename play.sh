@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# stat takes -c on GNU coreutils and -f on BSD/macOS.
+file_size() {
+    stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0
+}
+
 check_media_player_exists() {
     # Try each player in order and pick the first available one
     if command -v "$MEDIA_PLAYER" >/dev/null 2>&1; then
@@ -39,7 +44,7 @@ if [ -n "$ultimate_subdir" ]; then
         file_path="${ultimate_subdir}Video.mp4"
     fi
 
-    if [ -n "$file_path" ] && [ -s "$file_path" ] && [ "$(stat -c%s "$file_path")" -ge 1024 ]; then
+    if [ -n "$file_path" ] && [ -s "$file_path" ] && [ "$(file_size "$file_path")" -ge 1024 ]; then
         echo "play.sh: Playing $file_path with $MEDIA_PLAYER ..."
         "$MEDIA_PLAYER" "$file_path" > /dev/null 2>&1
     else

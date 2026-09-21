@@ -10,6 +10,15 @@ check_command_available() {
     fi
 }
 
+# nproc is GNU coreutils; macOS has sysctl instead.
+cpu_count() {
+    if command -v nproc > /dev/null 2>&1; then
+        nproc
+    else
+        sysctl -n hw.ncpu 2>/dev/null || echo 4
+    fi
+}
+
 # Check for required commands
 check_command_available "cmake"
 check_command_available "ninja"
@@ -23,18 +32,25 @@ if [ ! -s "../MicroTeX-master/build/LaTeX" ]; then
     read -p "Would you like to automatically re-install MicroTeX now? Installation process can be viewed in go.sh. [y/N]: " choice
     case "$choice" in
         y|Y )
-            (
-                set -e # Exit on error
-                echo ">>> Cloning and building MicroTeX..."
-                cd .. || exit 1
-                rm MicroTeX-master -rf
-                git clone --depth 1 https://github.com/NanoMichael/MicroTeX.git MicroTeX-master
-                cd MicroTeX-master || exit 1
-                mkdir -p build
-                cd build || exit 1
-                cmake ..
-                make -j"$(nproc)"
-            )
+            if [ "$(uname -s)" = "Darwin" ]; then
+                # Upstream's Unix target needs gtksourceviewmm-3.0, which is
+                # deprecated and absent from Homebrew. This builds the
+                # headless-only converter, which is all SwapTube invokes.
+                ./cmake/setup_microtex_macos.sh ../MicroTeX-master
+            else
+                (
+                    set -e # Exit on error
+                    echo ">>> Cloning and building MicroTeX..."
+                    cd .. || exit 1
+                    rm -rf MicroTeX-master
+                    git clone --depth 1 https://github.com/NanoMichael/MicroTeX.git MicroTeX-master
+                    cd MicroTeX-master || exit 1
+                    mkdir -p build
+                    cd build || exit 1
+                    cmake ..
+                    make -j"$(cpu_count)"
+                )
+            fi
             ;;
         * )
     esac
@@ -166,7 +182,7 @@ echo "go.sh: Building project ${PROJECT_NAME} with output folder name ${OUTPUT_F
 
     echo "go.sh: Compiling..."
     # build the project
-    ninja -j"$(nproc)"
+    ninja -j"$(cpu_count)"
 
     # Check if the build was successful
     if [ $? -ne 0 ]; then

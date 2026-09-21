@@ -16,6 +16,8 @@ public:
     ivec2 get_wh() const;
 private:
     ivec2 wh;
-    uint32_t* device_ptr;
+    // The default constructor allocates nothing, and both resize() and the
+    // destructor free unconditionally, so this has to start out null.
+    uint32_t* device_ptr = nullptr;
     void resize(const ivec2& new_wh);
 };

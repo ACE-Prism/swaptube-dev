@@ -1,7 +1,12 @@
 #!/bin/bash
 
-# List of demo projects
-mapfile -t DEMOS < <(find src/Projects/Demos -type f -name '*.cpp' -printf '%f\n' | sed 's/\.cpp$//')
+# List of demo projects.
+# Avoids mapfile (bash 4+) and find -printf (GNU find); macOS has neither.
+DEMOS=()
+while IFS= read -r demo_path; do
+    demo_name=$(basename "$demo_path")
+    DEMOS+=("${demo_name%.cpp}")
+done < <(find src/Projects/Demos -type f -name '*.cpp' | sort)
 
 PASS_COUNT=0
 FAIL_COUNT=0

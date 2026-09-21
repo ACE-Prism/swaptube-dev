@@ -11,6 +11,12 @@
 #include "Writer.h"
 #include <cstdlib>
 
+// NVENC and VA-API hand the encoder a frame that already lives in GPU memory, so
+// the ARGB -> P010 kernel writes straight into the encoder's surface. The other
+// two backends take an ordinary P010 frame in main memory instead
+// (SOFTWARE_FRAMES): VideoToolbox uploads it to Apple's media engine itself, and
+// libx265 wants host memory anyway. That path is also what makes a GPU-less
+// build work at all -- there is no hardware frame context to allocate.
 #if defined(USE_NVIDIA)
     #define PIXEL_FORMAT AV_PIX_FMT_CUDA
     #define HWDEVICE_TYPE AV_HWDEVICE_TYPE_CUDA
@@ -19,10 +25,14 @@
     #define PIXEL_FORMAT AV_PIX_FMT_VAAPI
     #define HWDEVICE_TYPE AV_HWDEVICE_TYPE_VAAPI
     #define CODEC_NAME "av1_vaapi"
-#else // Placeholders, shouldn't actually happen
-    #define PIXEL_FORMAT AV_PIX_FMT_YUV420P
-    #define HWDEVICE_TYPE AV_HWDEVICE_TYPE_NONE
+#elif defined(__APPLE__)
+    #define PIXEL_FORMAT AV_PIX_FMT_P010LE
+    #define CODEC_NAME "hevc_videotoolbox"
+    #define SOFTWARE_FRAMES
+#else
+    #define PIXEL_FORMAT AV_PIX_FMT_P010LE
     #define CODEC_NAME "libx265"
+    #define SOFTWARE_FRAMES
 #endif
 
 using namespace std;
@@ -83,13 +93,17 @@ VideoWriter::VideoWriter(AVFormatContext *fc_, const string& video_path, int vid
     }
 
     AVBufferRef* hw_device_ctx = nullptr;
+    #ifndef SOFTWARE_FRAMES
     int ret = av_hwdevice_ctx_create(&hw_device_ctx, HWDEVICE_TYPE, nullptr, nullptr, 0);
     if (ret < 0) {
         char errbuf[256];
         av_strerror(ret, errbuf, sizeof(errbuf));
-        cout << "Failed to create CUDA device context: " << errbuf << endl;
-        throw runtime_error("Failed to create CUDA device context!");
+        cout << "Failed to create hardware device context: " << errbuf << endl;
+        throw runtime_error("Failed to create hardware device context!");
     }
+    #else
+    int ret = 0;
+    #endif
 
     videoStream = avformat_new_stream(fc, codec);
     if (!videoStream) {
@@ -102,7 +116,9 @@ VideoWriter::VideoWriter(AVFormatContext *fc_, const string& video_path, int vid
         av_buffer_unref(&hw_device_ctx);
         throw runtime_error("Failed to allocate video codec context.");
     }
+    #ifndef SOFTWARE_FRAMES
     videoCodecContext->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+    #endif
     videoCodecContext->width = video_width_pixels;
     videoCodecContext->height = video_height_pixels;
     videoCodecContext->pix_fmt = PIXEL_FORMAT;
@@ -113,6 +129,7 @@ VideoWriter::VideoWriter(AVFormatContext *fc_, const string& video_path, int vid
     videoCodecContext->framerate = { video_framerate_fps, 1 };
     videoCodecContext->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
+    #ifndef SOFTWARE_FRAMES
     videoCodecContext->hw_frames_ctx = av_hwframe_ctx_alloc(videoCodecContext->hw_device_ctx);
     if (!videoCodecContext->hw_frames_ctx) {
         av_buffer_unref(&hw_device_ctx);
@@ -131,15 +148,34 @@ VideoWriter::VideoWriter(AVFormatContext *fc_, const string& video_path, int vid
         av_buffer_unref(&hw_device_ctx);
         throw runtime_error("Failed to initialize hardware frame context!");
     }
-    
+    #endif
+
     // Sets quality compatible with both hevc and av1, extra options are ignored
     AVDictionary* opt = NULL;
     av_dict_set(&opt, "qp", "20", 0);
     #ifdef USE_AMD
     av_dict_set(&opt, "global_quality", "20", 0);
     #endif
+    #ifdef SOFTWARE_FRAMES
+    av_dict_set(&opt, "crf", "20", 0); // libx265
+    // VideoToolbox ignores qp/crf. Constant quality needs AV_CODEC_FLAG_QSCALE,
+    // which its encoder only honours on Apple silicon; elsewhere it errors out
+    // of avcodec_open2 and the retry below falls back to a target bitrate.
+    videoCodecContext->flags |= AV_CODEC_FLAG_QSCALE;
+    videoCodecContext->global_quality = FF_QP2LAMBDA * 65;
+    #endif
 
     int ret2 = avcodec_open2(videoCodecContext, codec, &opt);
+    #ifdef SOFTWARE_FRAMES
+    if (ret2 < 0 && (videoCodecContext->flags & AV_CODEC_FLAG_QSCALE)) {
+        cout << CODEC_NAME << " rejected constant quality; falling back to a target bitrate." << endl;
+        videoCodecContext->flags &= ~AV_CODEC_FLAG_QSCALE;
+        videoCodecContext->global_quality = 0;
+        // ~0.2 bits per pixel per frame, generous for a master that gets re-encoded downstream.
+        videoCodecContext->bit_rate = static_cast<int64_t>(video_width_pixels) * video_height_pixels * video_framerate_fps / 5;
+        ret2 = avcodec_open2(videoCodecContext, codec, &opt);
+    }
+    #endif
     if (ret2 < 0) {
         char errbuf[256];
         av_strerror(ret2, errbuf, sizeof(errbuf));
@@ -193,6 +229,16 @@ void VideoWriter::add_frame(uint32_t* device_pixels) {
     gpu_frame->format = PIXEL_FORMAT;
     gpu_frame->width  = get_video_width_pixels();
     gpu_frame->height = get_video_height_pixels();
+
+    #ifdef SOFTWARE_FRAMES
+    // Plain P010 in main memory. The ARGB source already lives there too on a
+    // unified-memory or CPU backend, so the kernel fills these planes directly.
+    int ret = av_frame_get_buffer(gpu_frame, 0);
+    if (ret < 0) {
+        av_frame_free(&gpu_frame);
+        throw runtime_error("Failed to allocate frame buffer!");
+    }
+    #else
     gpu_frame->hw_frames_ctx = av_buffer_ref(videoCodecContext->hw_frames_ctx);
 
     int ret = av_hwframe_get_buffer(videoCodecContext->hw_frames_ctx, gpu_frame, 0);
@@ -200,6 +246,7 @@ void VideoWriter::add_frame(uint32_t* device_pixels) {
         av_frame_free(&gpu_frame);
         throw runtime_error("Failed to allocate hardware frame buffer!");
     }
+    #endif
     
     // Initialize values only used on AMD
     int fd = 0;

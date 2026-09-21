@@ -1,4 +1,5 @@
 #include "RubiksGraphScene.h"
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 

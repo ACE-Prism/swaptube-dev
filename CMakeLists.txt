@@ -16,9 +16,18 @@ set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED libswscale libavcodec libavformat libavdevice libavutil libavfilter)
 pkg_check_modules(GLIB REQUIRED glib-2.0)
-find_package(Cairo REQUIRED)
-find_package(RSVG REQUIRED)
 find_package(PNG REQUIRED)
+find_package(Threads REQUIRED)
+
+# Cairo, RSVG and gdk-pixbuf are discovered through pkg-config rather than
+# hardcoded /usr/include paths, because their headers include each other's and
+# only pkg-config knows the transitive include directories. On a Homebrew
+# prefix none of them live anywhere the compiler looks by default.
+pkg_check_modules(CAIRO REQUIRED cairo)
+pkg_check_modules(RSVG REQUIRED librsvg-2.0)
+pkg_check_modules(GDKPIXBUF REQUIRED gdk-pixbuf-2.0)
+pkg_check_modules(GOBJECT REQUIRED gobject-2.0)
+pkg_check_modules(LZMA liblzma)
 
 set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CMAKE_COMMAND} -E time")
 set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK "${CMAKE_COMMAND} -E time")
@@ -100,7 +109,38 @@ elseif(CMAKE_CUDA_COMPILER AND NOT COMPUTE_LANG OR COMPUTE_LANG STREQUAL "CUDA")
         add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-forward-unknown-to-host-compiler>)
     endif()
 else()
-    message(WARNING "Neither CUDA nor HIP found. Please refer to readme for building without GPU support.")
+    # CPU backend. src/CUDA stays the source of truth; cmake/translate_cuda_to_cpu.py
+    # generates src/CPU from it and rewrites the <<<grid, block>>> launches, the
+    # same arrangement the HIP path has with hipify-perl. Everything else nvcc
+    # would provide implicitly comes from src/CPUBackend/cuda_runtime.h.
+    message(STATUS "Neither CUDA nor HIP found. Building the CPU backend.")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_compile_definitions(USE_CPU)
+    set(GPU_LANGUAGE CPU)
+
+    file(GLOB_RECURSE CUDA_TO_TRANSLATE "src/CUDA/*.cu" "src/CUDA/*.cuh")
+    # Generated at configure time so the glob below sees the result; touching any
+    # .cu re-runs configure and regenerates.
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/cmake/translate_cuda_to_cpu.py
+                --input ${CMAKE_SOURCE_DIR}/src/CUDA
+                --output ${CMAKE_SOURCE_DIR}/src/CPU
+        RESULT_VARIABLE TRANSLATE_RESULT
+        OUTPUT_VARIABLE TRANSLATE_OUTPUT
+    )
+    if(NOT TRANSLATE_RESULT EQUAL 0)
+        message(FATAL_ERROR "translate_cuda_to_cpu.py failed: ${TRANSLATE_OUTPUT}")
+    endif()
+    message(STATUS "${TRANSLATE_OUTPUT}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CUDA_TO_TRANSLATE})
+
+    file(GLOB_RECURSE GPU_SOURCES "src/CPU/*.cu")
+    set_source_files_properties(${GPU_SOURCES} PROPERTIES
+        LANGUAGE CXX
+        COMPILE_OPTIONS "-x;c++"
+        COMPILE_DEFINITIONS "SWAPTUBE_CPU_DEVICE_TU"
+        INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/src/CPUBackend"
+    )
 endif()
 
 add_compile_options(-fdiagnostics-color=always)
@@ -111,24 +151,35 @@ message(STATUS "Executable target ${PROJECT_NAME} added")
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${PROJECT_NAME}
     ${FFMPEG_INCLUDE_DIRS} ${RSVG_INCLUDE_DIRS} ${GLIB_INCLUDE_DIRS}
-    "/usr/include/gdk-pixbuf-2.0"
-    "/usr/include/cairo"
+    ${CAIRO_INCLUDE_DIRS} ${GDKPIXBUF_INCLUDE_DIRS} ${GOBJECT_INCLUDE_DIRS}
     ${PNG_INCLUDE_DIR}
 )
 
-target_link_libraries(
-    ${PROJECT_NAME}
+# pkg-config reports the library search paths separately from the library names;
+# outside /usr/lib the linker needs both.
+target_link_directories(${PROJECT_NAME} PRIVATE
+    ${FFMPEG_LIBRARY_DIRS} ${RSVG_LIBRARY_DIRS} ${GLIB_LIBRARY_DIRS}
+    ${CAIRO_LIBRARY_DIRS} ${GDKPIXBUF_LIBRARY_DIRS} ${GOBJECT_LIBRARY_DIRS}
+    ${LZMA_LIBRARY_DIRS}
+)
+
+# These pkg-config results overlap heavily (librsvg alone pulls in cairo, glib,
+# gobject and lzma), and the duplicates make the linker complain.
+set(SWAPTUBE_LINK_LIBRARIES
     ${GLIB_LIBRARIES}
     ${FFMPEG_LIBRARIES}
     ${RSVG_LIBRARIES}
     ${FDKAAC_LIBRARIES}
-    cairo
-    gobject-2.0
-    lzma
+    ${CAIRO_LIBRARIES}
+    ${GOBJECT_LIBRARIES}
+    ${LZMA_LIBRARIES}
     ${PNG_LIBRARIES}
     ${GPU_LIBRARIES}
     ${X11_LIBRARIES}
 )
+list(REMOVE_DUPLICATES SWAPTUBE_LINK_LIBRARIES)
+
+target_link_libraries(${PROJECT_NAME} ${SWAPTUBE_LINK_LIBRARIES} Threads::Threads)
 
 message(STATUS "Link libraries configured for ${PROJECT_NAME}")
 target_compile_options(${PROJECT_NAME} PRIVATE -Wreorder)

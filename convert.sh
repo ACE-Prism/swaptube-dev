@@ -6,6 +6,11 @@ check_command_available() {
     fi
 }
 
+# stat takes -c on GNU coreutils and -f on BSD/macOS.
+file_size() {
+    stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0
+}
+
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
     echo "convert.sh: Usage: $0 <ProjectName> [ffmpeg_path]"
     exit 1
@@ -37,7 +42,7 @@ elif [ -f "${LATEST}/Video.mp4" ]; then
     SOURCE_VIDEO="${LATEST}/Video.mp4"
 fi
 
-if [ -z "$SOURCE_VIDEO" ] || [ "$(stat -c%s "$SOURCE_VIDEO")" -lt 1024 ]; then
+if [ -z "$SOURCE_VIDEO" ] || [ "$(file_size "$SOURCE_VIDEO")" -lt 1024 ]; then
     echo "convert.sh: Error - The newest output video is missing or smaller than 1 KiB: ${LATEST}"
     exit 1
 fi
