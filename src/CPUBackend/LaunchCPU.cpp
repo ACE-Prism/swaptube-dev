@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -138,10 +141,63 @@ private:
     bool quit_ = false;
 };
 
+// Accumulates wall time per kernel name and prints a ranked table at exit.
+class KernelProfile {
+public:
+    static KernelProfile& instance() { static KernelProfile p; return p; }
+
+    void record(const char* name, double seconds) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        Entry& e = entries_[name];
+        e.seconds += seconds;
+        ++e.calls;
+    }
+
+private:
+    struct Entry { double seconds = 0.0; unsigned long calls = 0; };
+
+    ~KernelProfile() {
+        if (entries_.empty()) return;
+
+        std::vector<std::pair<std::string, Entry>> rows(entries_.begin(), entries_.end());
+        std::sort(rows.begin(), rows.end(),
+                  [](const auto& a, const auto& b) { return a.second.seconds > b.second.seconds; });
+
+        double total = 0.0;
+        for (const auto& r : rows) total += r.second.seconds;
+
+        std::fprintf(stderr, "\n=================== Kernel Profile ===================\n");
+        std::fprintf(stderr, "%-42s %9s %8s %9s %6s\n", "kernel", "total(s)", "calls", "avg(ms)", "share");
+        for (const auto& r : rows) {
+            std::fprintf(stderr, "%-42s %9.3f %8lu %9.3f %5.1f%%\n",
+                         r.first.c_str(), r.second.seconds, r.second.calls,
+                         1000.0 * r.second.seconds / static_cast<double>(r.second.calls),
+                         total > 0.0 ? 100.0 * r.second.seconds / total : 0.0);
+        }
+        std::fprintf(stderr, "%-42s %9.3f\n", "TOTAL", total);
+        std::fprintf(stderr, "======================================================\n");
+    }
+
+    std::mutex mutex_;
+    std::map<std::string, Entry> entries_;
+};
+
 } // namespace
 
 void block_barrier() {
     if (tl_barrier) tl_barrier->arrive();
+}
+
+bool profiling_enabled() {
+    static const bool on = [] {
+        const char* s = std::getenv("SWAPTUBE_PROFILE_KERNELS");
+        return s && *s && std::string(s) != "0";
+    }();
+    return on;
+}
+
+void record_kernel_time(const char* name, double seconds) {
+    KernelProfile::instance().record(name, seconds);
 }
 
 unsigned worker_count() { return Pool::instance().size(); }

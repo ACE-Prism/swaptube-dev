@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <iostream>
 #include <utility>
 #include "../Host_Device_Shared/ThreeDimensionStructs.h"
 #include "color.cuh" // Contains overlay_pixel and set_pixel

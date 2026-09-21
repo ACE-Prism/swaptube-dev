@@ -1,6 +1,8 @@
 #pragma once
 
+#ifndef __METAL_VERSION__ // Metal forbids the C++ standard library
 #include <cstdint>
+#endif
 #include "vec.h"
 #include "shared_precompiler_directives.h"
 

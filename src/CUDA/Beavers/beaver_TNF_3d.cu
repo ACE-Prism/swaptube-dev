@@ -4,6 +4,7 @@
 #include "../color.cuh"
 #include "../common_graphics.cuh"
 #include "../edge_detect.cuh"
+#include <iostream>
 #include <vector>
 
 extern "C" void cuda_overlay (

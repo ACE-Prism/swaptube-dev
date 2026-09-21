@@ -4,6 +4,10 @@ media
 src/Projects/.active_project.cpp
 src/HIP
 src/CPU
+# Generated from src/CUDA by cmake/generate_metal_bindings.py. The hand-written
+# .metal shaders and host wrappers alongside it are committed.
+src/Metal/generated
+cmake/__pycache__
 local.cmake
 local_override.cmake
 .vscode/

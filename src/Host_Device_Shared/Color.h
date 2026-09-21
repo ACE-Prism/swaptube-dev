@@ -1,7 +1,8 @@
 #pragma once
 
-#include <iomanip>
+#ifndef __METAL_VERSION__ // Metal forbids the C++ standard library
 #include <cstdint>
+#endif
 #include "../Host_Device_Shared/helpers.h"
 
 // Colors are everywhere. For the sake of speed, we do not give them a dedicated class.
@@ -31,27 +32,30 @@ HOST_DEVICE inline uint32_t color_combine(int base_color, int over_color, float 
     return (final_alpha << 24) | (final_rgb);
 }
 
-HOST_DEVICE inline uint32_t black_to_blue_to_white(double w){
-    int rainbow_part1 = max(0.,min(1.,w*2-0))*255.;
-    int rainbow_part2 = max(0.,min(1.,w*2-1))*255.;
+// These take float rather than double because Metal has no double at all. The
+// extra precision was never meaningful here: every one of them ends up quantized
+// to 8 bits per channel.
+HOST_DEVICE inline uint32_t black_to_blue_to_white(float w){
+    int rainbow_part1 = max(0.0f,min(1.0f,w*2-0))*255.0f;
+    int rainbow_part2 = max(0.0f,min(1.0f,w*2-1))*255.0f;
     return argb(255, rainbow_part2, rainbow_part2, rainbow_part1);
 }
 
 // Convert HSV to RGB
 // h, s, v are in the range [0, 1]
-HOST_DEVICE inline uint32_t HSVtoRGB(double h, double s, double v, int alpha = 255) {
-    double r_f, g_f, b_f;
+HOST_DEVICE inline uint32_t HSVtoRGB(float h, float s, float v, int alpha = 255) {
+    float r_f, g_f, b_f;
 
-    if (s == 0.0) {
+    if (s == 0.0f) {
         // Achromatic (grey)
         r_f = g_f = b_f = v;
     } else {
-        h = fmod(h, 1.0) * 6.0;  // Hue sector [0, 6)
+        h = fmod(h, 1.0f) * 6.0f;  // Hue sector [0, 6)
         int i = h;
-        double f = h - i;
-        double p = v * (1.0 - s);
-        double q = v * (1.0 - s * f);
-        double t = v * (1.0 - s * (1.0 - f));
+        float f = h - i;
+        float p = v * (1.0f - s);
+        float q = v * (1.0f - s * f);
+        float t = v * (1.0f - s * (1.0f - f));
 
         switch (i) {
             case 0: r_f = v; g_f = t; b_f = p; break;
@@ -64,25 +68,25 @@ HOST_DEVICE inline uint32_t HSVtoRGB(double h, double s, double v, int alpha = 2
     }
 
     // Scale to [0, 255] and clamp
-    int r = clamp(static_cast<int>(round(r_f * 255.0)), 0, 255);
-    int g = clamp(static_cast<int>(round(g_f * 255.0)), 0, 255);
-    int b = clamp(static_cast<int>(round(b_f * 255.0)), 0, 255);
+    int r = clamp(static_cast<int>(round(r_f * 255.0f)), 0, 255);
+    int g = clamp(static_cast<int>(round(g_f * 255.0f)), 0, 255);
+    int b = clamp(static_cast<int>(round(b_f * 255.0f)), 0, 255);
     return argb(alpha, r, g, b);
 }
 
-HOST_DEVICE inline uint32_t pendulum_color(double angle1, double angle2, double p1, double p2) {
-    float sa1 = sin(angle1) + 0.000001;
+HOST_DEVICE inline uint32_t pendulum_color(float angle1, float angle2, float p1, float p2) {
+    float sa1 = sin(angle1) + 0.000001f;
     float sa2 = sin(angle2);
-    float h = atan2(sa2, sa1)/6.283+1;
-    float s = min((square(sa1) + square(sa2))*5.,1.);
-    float v = 1-min(.1 * sqrt(p1*p1+p2*p2), 1.0);
+    float h = atan2(sa2, sa1)/6.283f+1;
+    float s = min((square(sa1) + square(sa2))*5.0f,1.0f);
+    float v = 1-min(.1f * sqrt(p1*p1+p2*p2), 1.0f);
     return HSVtoRGB(h, s, v);
 }
 
 HOST_DEVICE inline float linear_srgb_to_srgb(float x) {
-    if (x >= 0.0031308)
-        return 1.055*pow(x, 1.0/2.4) - 0.055;
-    return 12.92 * x;
+    if (x >= 0.0031308f)
+        return 1.055f*pow(x, 1.0f/2.4f) - 0.055f;
+    return 12.92f * x;
 }
 
 HOST_DEVICE inline uint32_t OKLABtoRGB(int alpha, float L, float a, float b)

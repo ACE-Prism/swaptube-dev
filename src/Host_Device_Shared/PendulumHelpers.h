@@ -1,4 +1,6 @@
+#ifndef __METAL_VERSION__ // Metal forbids the C++ standard library
 #include <cmath>
+#endif
 #include "shared_precompiler_directives.h"
 
 SHARED_FILE_PREFIX

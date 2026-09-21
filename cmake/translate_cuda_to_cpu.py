@@ -13,10 +13,11 @@ in this codebase has the form
 
 so substituting just the <<<...>>> token is enough:
 
-    swaptube_cpu::launcher(kernel, grid, block)(args...)
+    swaptube_cpu::launcher("kernel", kernel, grid, block)(args...)
 
 The argument list is never touched, which keeps the rewrite independent of how
-the arguments are formatted or nested.
+the arguments are formatted or nested. The name is passed through only so that
+SWAPTUBE_PROFILE_KERNELS=1 can attribute time to individual kernels.
 """
 
 import argparse
@@ -79,9 +80,35 @@ def include_line(rel: pathlib.Path) -> str:
     return f'#include "{up}CPUBackend/LaunchCPU.h"\n'
 
 
-def translate(src: str, rel: pathlib.Path, barrier_kernels) -> tuple:
+# `extern "C" <return type> <name>(`, where the name is what the C++ layer calls.
+EXTERN_C_ENTRY = re.compile(r'(extern\s+"C"\s+[\w:*&<>\s]*?\b)(?P<name>\w+)(\s*\()')
+
+
+def suffix_extern_c_entries(src: str) -> tuple:
+    """Rename this file's extern "C" entry points with a _cpu suffix.
+
+    Applied to files that have a Metal port. Both implementations then link
+    together, and the Metal wrapper in src/Metal/ owns the real name and forwards
+    to the _cpu one when the GPU is unavailable or SWAPTUBE_DISABLE_METAL is set.
+    That fallback is also what makes an A/B comparison possible from a single
+    build.
+    """
+    renamed = []
+
+    def sub(m):
+        renamed.append(m.group('name'))
+        return f'{m.group(1)}{m.group("name")}_cpu{m.group(3)}'
+
+    return EXTERN_C_ENTRY.sub(sub, src), renamed
+
+
+def translate(src: str, rel: pathlib.Path, barrier_kernels, metal_ported=False) -> tuple:
     launches = 0
     barrier_launches = 0
+    renamed = []
+
+    if metal_ported:
+        src, renamed = suffix_extern_c_entries(src)
 
     def sub(m):
         nonlocal launches, barrier_launches
@@ -92,7 +119,7 @@ def translate(src: str, rel: pathlib.Path, barrier_kernels) -> tuple:
         if kernel in barrier_kernels:
             fn = 'launcher_barrier'
             barrier_launches += 1
-        return f'swaptube_cpu::{fn}({kernel}, {config})'
+        return f'swaptube_cpu::{fn}("{kernel}", {kernel}, {config})'
 
     out = LAUNCH.sub(sub, src)
 
@@ -105,15 +132,25 @@ def translate(src: str, rel: pathlib.Path, barrier_kernels) -> tuple:
     else:
         out = header + out
 
-    return out, launches, barrier_launches
+    return out, launches, barrier_launches, renamed
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--input', required=True, type=pathlib.Path)
     ap.add_argument('--output', required=True, type=pathlib.Path)
+    ap.add_argument('--metal-manifest', type=pathlib.Path,
+                    help='files listed here get their extern "C" entry points suffixed '
+                         'with _cpu, because src/Metal owns the real names')
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args()
+
+    metal_ported = set()
+    if args.metal_manifest and args.metal_manifest.exists():
+        for line in args.metal_manifest.read_text().splitlines():
+            line = line.split('#', 1)[0].strip()
+            if line:
+                metal_ported.add(line.split()[0])
 
     in_root, out_root = args.input, args.output
     if not in_root.is_dir():
@@ -127,14 +164,18 @@ def main() -> int:
         shutil.rmtree(out_root)
 
     total_launches = total_barrier = 0
+    all_renamed = {}
     for path in sources:
         rel = path.relative_to(in_root)
         dest = out_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        out, n, nb = translate(path.read_text(), rel, barrier_kernels)
+        out, n, nb, renamed = translate(path.read_text(), rel, barrier_kernels,
+                                        metal_ported=rel.as_posix() in metal_ported)
         dest.write_text(out)
         total_launches += n
         total_barrier += nb
+        if renamed:
+            all_renamed[rel.as_posix()] = renamed
 
     if not args.quiet:
         print(f'translate_cuda_to_cpu: {len(sources)} files, '
@@ -146,6 +187,8 @@ def main() -> int:
         if atomics_only:
             print('  fast dispatcher despite __syncthreads (global atomics only): '
                   + ', '.join(sorted(atomics_only)))
+        for rel, names in sorted(all_renamed.items()):
+            print(f'  metal-ported, renamed to _cpu in {rel}: ' + ', '.join(names))
     return 0
 
 

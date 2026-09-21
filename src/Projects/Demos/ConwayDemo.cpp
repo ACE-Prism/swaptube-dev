@@ -7,7 +7,15 @@ void render_video() {
     ScalingParams sp(ivec2(1000, 1000));
     shared_ptr<DevicePointer> ourdemo = latex_to_gpu_pix("\\text{I really} \\\\\\\\ \\text{loved your} \\\\\\\\ \\text{crochet talk!}", sp);
     Pixels env(ivec2(1000, 1000));
-    cuda_copy_pixels_to_host(env.pixels.data(), env.wh.x * env.wh.y, ourdemo->get_ptr());
+    // ScalingParams fits the SVG inside the box rather than filling it, so the
+    // rendered bitmap is usually far shorter than 1000 rows. Copy what is actually
+    // there and leave the rest of the environment blank; asking for the whole box
+    // reads past the end of the allocation.
+    const ivec2 text_wh = ourdemo->get_wh();
+    const int env_size = env.wh.x * env.wh.y;
+    const int text_size = text_wh.x * text_wh.y;
+    cuda_copy_pixels_to_host(env.pixels.data(), text_size < env_size ? text_size : env_size,
+                             ourdemo->get_ptr());
     ConwayScene cs(ivec2(20000,20000), env);
 
     cs.manager.set("zoom", "-2");

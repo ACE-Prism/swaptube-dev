@@ -37,7 +37,21 @@ set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK "${CMAKE_COMMAND} -E time")
 # Include, however, src/Projects/.active_project.cpp
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 list(FILTER SOURCES EXCLUDE REGEX "src/Projects/.*")
+# Added back by the Metal branch below when it applies; these do not compile
+# anywhere else.
+list(FILTER SOURCES EXCLUDE REGEX "src/Metal/.*")
+list(FILTER SOURCES EXCLUDE REGEX "src/MetalBackend/.*")
 file(GLOB_RECURSE ACTIVE_PROJECT_SOURCE "src/Projects/.active_project.cpp")
+
+# The Metal backend is additive rather than a third alternative: the kernels
+# listed in src/Metal/ported.manifest run on the GPU and everything else stays on
+# the CPU backend, sharing the same buffers. Decided before the compute-language
+# chain because the CPU generator needs the manifest.
+set(SWAPTUBE_METAL OFF)
+if(APPLE AND (NOT COMPUTE_LANG OR COMPUTE_LANG STREQUAL "METAL"))
+    set(SWAPTUBE_METAL ON)
+    set(SWAPTUBE_METAL_MANIFEST ${CMAKE_SOURCE_DIR}/src/Metal/ported.manifest)
+endif()
 
 include(CheckLanguage)
 message(STATUS "Checking for CUDA and HIP support...")
@@ -119,12 +133,18 @@ else()
     set(GPU_LANGUAGE CPU)
 
     file(GLOB_RECURSE CUDA_TO_TRANSLATE "src/CUDA/*.cu" "src/CUDA/*.cuh")
+    if(SWAPTUBE_METAL)
+        # Metal-ported files get their extern "C" entry points suffixed with _cpu
+        # so both implementations can link; src/Metal owns the real names.
+        set(TRANSLATE_MANIFEST_ARG --metal-manifest ${SWAPTUBE_METAL_MANIFEST})
+    endif()
     # Generated at configure time so the glob below sees the result; touching any
     # .cu re-runs configure and regenerates.
     execute_process(
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/cmake/translate_cuda_to_cpu.py
                 --input ${CMAKE_SOURCE_DIR}/src/CUDA
                 --output ${CMAKE_SOURCE_DIR}/src/CPU
+                ${TRANSLATE_MANIFEST_ARG}
         RESULT_VARIABLE TRANSLATE_RESULT
         OUTPUT_VARIABLE TRANSLATE_OUTPUT
     )
@@ -141,6 +161,44 @@ else()
         COMPILE_DEFINITIONS "SWAPTUBE_CPU_DEVICE_TU"
         INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/src/CPUBackend"
     )
+endif()
+
+if(SWAPTUBE_METAL)
+    # The shaders are compiled from source at runtime rather than into a
+    # .metallib, because xcrun metal ships only with full Xcode while the
+    # MTLDevice::newLibrary path needs nothing but the Command Line Tools. The
+    # generator flattens each shader's includes and embeds the result, which also
+    # removes any dependency on a shader file's path at runtime.
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 17)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+
+    file(GLOB_RECURSE METAL_SHADERS "src/Metal/*.metal")
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/cmake/generate_metal_bindings.py
+                --cuda ${CMAKE_SOURCE_DIR}/src/CUDA
+                --metal ${CMAKE_SOURCE_DIR}/src/Metal
+                --manifest ${SWAPTUBE_METAL_MANIFEST}
+                --stubs ${CMAKE_SOURCE_DIR}/cmake/metal_include_stubs
+        RESULT_VARIABLE METAL_GEN_RESULT
+        OUTPUT_VARIABLE METAL_GEN_OUTPUT
+        ERROR_VARIABLE METAL_GEN_ERROR
+    )
+    if(NOT METAL_GEN_RESULT EQUAL 0)
+        message(FATAL_ERROR "generate_metal_bindings.py failed: ${METAL_GEN_ERROR}")
+    endif()
+    message(STATUS "${METAL_GEN_OUTPUT}")
+    # A shader or manifest edit has to re-run the generator, and a CUDA edit has
+    # to re-check the recorded kernel hashes.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 ${METAL_SHADERS} ${SWAPTUBE_METAL_MANIFEST})
+
+    file(GLOB_RECURSE METAL_HOST_SOURCES "src/Metal/*.cpp")
+    list(APPEND SOURCES ${METAL_HOST_SOURCES} ${CMAKE_SOURCE_DIR}/src/MetalBackend/MetalRuntime.mm)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/MetalBackend/MetalRuntime.mm
+                                PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    message(STATUS "Metal backend enabled (${CMAKE_SOURCE_DIR}/src/Metal)")
 endif()
 
 add_compile_options(-fdiagnostics-color=always)
@@ -180,6 +238,10 @@ set(SWAPTUBE_LINK_LIBRARIES
 list(REMOVE_DUPLICATES SWAPTUBE_LINK_LIBRARIES)
 
 target_link_libraries(${PROJECT_NAME} ${SWAPTUBE_LINK_LIBRARIES} Threads::Threads)
+
+if(SWAPTUBE_METAL)
+    target_link_libraries(${PROJECT_NAME} "-framework Metal" "-framework Foundation")
+endif()
 
 message(STATUS "Link libraries configured for ${PROJECT_NAME}")
 target_compile_options(${PROJECT_NAME} PRIVATE -Wreorder)

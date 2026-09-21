@@ -1,0 +1,20 @@
+# Files in src/CUDA that have a hand-written Metal port in src/Metal.
+#
+# Each line is a path relative to src/CUDA, optionally followed by
+# kernel=hash entries recording the CUDA kernel body each port was written
+# against. cmake/generate_metal_bindings.py --check compares those hashes and
+# reports drift, because a changed *signature* already breaks the host wrapper's
+# compile while a changed *body* would otherwise go unnoticed.
+#
+# Listing a file here also makes translate_cuda_to_cpu.py suffix its extern "C"
+# wrappers with _cpu, so the CPU implementation stays available as a fallback and
+# as the reference for A/B comparison (SWAPTUBE_DISABLE_METAL=1).
+
+mandelbulb.cu runRaymarch=458bbfba9f9432d6
+volumetric_fractal.cu volumeRay=0540164927360932
+mandelbrot.cu mandelbrot_kernel=efec64198283f95c
+fractal_2d.cu go=d85fb728bd304055
+
+# No kernels of its own; listed so the Metal wrapper can own the allocation
+# entry points and back them with MTLBuffers.
+pixels_copy.cu

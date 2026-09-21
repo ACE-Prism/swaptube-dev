@@ -3,12 +3,13 @@
 // cmake/translate_cuda_to_cpu.py rewrites
 //     some_kernel<<<grid, block>>>(a, b)
 // into
-//     swaptube_cpu::launcher(some_kernel, grid, block)(a, b)
+//     swaptube_cpu::launcher("some_kernel", some_kernel, grid, block)(a, b)
 // and picks launcher_barrier() instead for kernels whose body contains
 // __syncthreads. Only the <<<...>>> token is substituted, so the argument list
 // is never parsed.
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include "cuda_runtime.h"
@@ -20,6 +21,28 @@ namespace swaptube_cpu {
 void run_blocks(unsigned num_blocks, const std::function<void(unsigned, unsigned)>& chunk);
 unsigned worker_count();
 
+// Per-kernel timing, enabled with SWAPTUBE_PROFILE_KERNELS=1 and dumped at
+// exit. This is how you find out which kernels are worth moving to the Metal
+// backend, and how you measure what moving them bought.
+bool profiling_enabled();
+void record_kernel_time(const char* name, double seconds);
+
+class ScopedKernelTimer {
+public:
+    explicit ScopedKernelTimer(const char* name)
+        : name_(name), start_(name ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}) {}
+
+    ~ScopedKernelTimer() {
+        if (!name_) return;
+        const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start_;
+        record_kernel_time(name_, elapsed.count());
+    }
+
+private:
+    const char* name_; // null when profiling is off, which makes this a no-op
+    std::chrono::steady_clock::time_point start_;
+};
+
 inline dim3 unflatten(unsigned i, const dim3& extent) {
     return dim3(i % extent.x, (i / extent.x) % extent.y, i / (extent.x * extent.y));
 }
@@ -29,6 +52,7 @@ inline dim3 unflatten(unsigned i, const dim3& extent) {
 // worker. Valid for every kernel that does not call __syncthreads.
 template <class Kernel>
 struct Launcher {
+    const char* name;
     Kernel kernel;
     dim3 grid, block;
 
@@ -36,6 +60,7 @@ struct Launcher {
     void operator()(Args&&... args) const {
         const unsigned nblocks = grid.x * grid.y * grid.z;
         if (nblocks == 0 || block.x * block.y * block.z == 0) return;
+        ScopedKernelTimer timer(profiling_enabled() ? name : nullptr);
         const dim3 g = grid, b = block;
         Kernel k = kernel;
 
@@ -64,6 +89,7 @@ void run_block_threads(unsigned num_blocks, const dim3& grid, const dim3& block,
 
 template <class Kernel>
 struct BarrierLauncher {
+    const char* name;
     Kernel kernel;
     dim3 grid, block;
 
@@ -71,15 +97,16 @@ struct BarrierLauncher {
     void operator()(Args&&... args) const {
         const unsigned nblocks = grid.x * grid.y * grid.z;
         if (nblocks == 0 || block.x * block.y * block.z == 0) return;
+        ScopedKernelTimer timer(profiling_enabled() ? name : nullptr);
         Kernel k = kernel;
         run_block_threads(nblocks, grid, block, [&] { k(args...); });
     }
 };
 
 template <class Kernel>
-Launcher<Kernel> launcher(Kernel k, dim3 grid, dim3 block) { return {k, grid, block}; }
+Launcher<Kernel> launcher(const char* name, Kernel k, dim3 grid, dim3 block) { return {name, k, grid, block}; }
 
 template <class Kernel>
-BarrierLauncher<Kernel> launcher_barrier(Kernel k, dim3 grid, dim3 block) { return {k, grid, block}; }
+BarrierLauncher<Kernel> launcher_barrier(const char* name, Kernel k, dim3 grid, dim3 block) { return {name, k, grid, block}; }
 
 } // namespace swaptube_cpu
