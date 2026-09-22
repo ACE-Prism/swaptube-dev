@@ -15,6 +15,11 @@ volumetric_fractal.cu volumeRay=0540164927360932
 mandelbrot.cu mandelbrot_kernel=efec64198283f95c
 fractal_2d.cu go=d85fb728bd304055
 
+# Not a heavy kernel, but every frame of every demo pays for it: profiling put
+# argb_to_p010 at 51% of LatexDemo's kernel time and 89% of GeometryDemo's.
+encoder_preprocessing.cu argb_to_p010=ca02516d23d9d35b
+root_fractal.cu root_fractal_kernel=1b329f786b6e2732 finalize_color_kernel=51c1c3a07a12ebb8
+
 # No kernels of its own; listed so the Metal wrapper can own the allocation
 # entry points and back them with MTLBuffers.
 pixels_copy.cu

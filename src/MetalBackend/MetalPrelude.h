@@ -36,6 +36,42 @@ inline uint px_cas(PixelBuffer pixels, int index, uint expected, uint desired) {
     return observed;
 }
 
+// ------------------------------------------------------- accumulation buffers
+// Apple silicon has native float atomics, so the accumulation buffers in
+// root_fractal need no compare-exchange loop.
+typedef device atomic<float>* FloatBuffer;
+
+inline void accum_add(FloatBuffer buffer, int index, float value) {
+    atomic_fetch_add_explicit(&buffer[index], value, memory_order_relaxed);
+}
+
+inline float accum_load(const device atomic<float>* buffer, int index) {
+    return atomic_load_explicit(&buffer[index], memory_order_relaxed);
+}
+
+// ------------------------------------------------------------- depth buffers
+// A depth buffer holds floats but has to be compare-exchanged, and MSL will not
+// let a device float* and a device atomic_uint* alias, so it is typed as the
+// latter and the values are bit-cast. Same shape as the CUDA original, retry loop
+// included.
+typedef device atomic_uint* DepthBuffer;
+
+inline float depth_load(DepthBuffer depth, int index) {
+    return as_type<float>(atomic_load_explicit(&depth[index], memory_order_relaxed));
+}
+
+// Returns true when z won the depth test and the caller should write its pixel.
+inline bool depth_test_and_set(DepthBuffer depth, int index, float z, float eps) {
+    uint observed = atomic_load_explicit(&depth[index], memory_order_relaxed);
+    for (;;) {
+        if (!(z < as_type<float>(observed) - eps)) return false;
+        if (atomic_compare_exchange_weak_explicit(&depth[index], &observed, as_type<uint>(z),
+                                                  memory_order_relaxed, memory_order_relaxed))
+            return true;
+        // observed now holds whoever beat us to it; try again against that.
+    }
+}
+
 // -------------------------------------------------------------- math names
 // CUDA spells the single-precision functions with an f suffix; MSL overloads the
 // unsuffixed names on float.

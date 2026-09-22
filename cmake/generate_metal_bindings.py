@@ -276,14 +276,16 @@ def flatten_includes(source: pathlib.Path, include_root: pathlib.Path, stubs: pa
     branch and skip the C++ standard library includes, which is also why
     <metal_stdlib> must not appear in these files: the runtime prepends it.
 
-    The stub directory satisfies the <cuda_runtime.h> and <thrust/complex.h>
-    includes that the reused .cuh headers carry. -nostdsysteminc keeps a stray
-    <stdio.h> from dragging the entire C library into the shader source.
+    The stub directory satisfies the <cuda_runtime.h> and <stdint.h> includes the
+    reused .cu and .cuh files carry. -nostdinc closes off every standard include
+    path, clang's own builtin directory included, so nothing can leak a real C
+    header into the shader; a missing stub becomes a build error naming the header,
+    which is the safe direction to fail in.
     """
     result = subprocess.run(
         ['clang', '-E', '-P', '-x', 'c++', '-std=c++17',
          '-D__METAL_VERSION__=310',
-         '-Xclang', '-nostdsysteminc',
+         '-nostdinc',
          '-I', str(stubs),
          '-I', str(include_root),
          # The extracted device prefixes keep the .cu's own relative includes,
@@ -321,6 +323,13 @@ POINTER_TYPES = SCALARS | {
     'void', 'vec2', 'vec3', 'vec4', 'ivec2', 'ivec3', 'ivec4', 'quat',
     'mat2', 'mat3', 'mat4', 'Bitboard', 'cuComplex', 'cuFloatComplex',
 }
+
+# Pointer parameters address a device buffer almost everywhere, which is why that
+# is the default. find_roots is the exception: it works on arrays the kernel
+# declares on its own stack, so its pointers are in the thread address space.
+# Nothing in the declaration distinguishes the two, so the exceptions are named.
+# Getting one wrong is a compile error from Metal, not a silent mistake.
+THREAD_POINTER_FUNCTIONS = {'find_roots'}
 
 
 def is_pointer_type(name: str) -> bool:
@@ -374,6 +383,10 @@ def qualify_reference_params(source: str) -> str:
         if not after[:1] in ('{', ';', ':'):
             continue
 
+        name_match = re.search(r'([A-Za-z_]\w*)\s*$', source[:m.end() - 1])
+        pointer_space = ('thread' if name_match and name_match.group(1) in THREAD_POINTER_FUNCTIONS
+                         else 'device')
+
         params = source[m.end():close]
         rewritten = []
         for part in split_params(params):
@@ -384,7 +397,7 @@ def qualify_reference_params(source: str) -> str:
             ptr = POINTER_PARAM.match(part)
             if (ptr and is_pointer_type(ptr.group('type'))
                     and not any(s in part for s in ('thread', 'device', 'constant'))):
-                rewritten.append(f'device {ptr.group("decl")}* {ptr.group("name")}')
+                rewritten.append(f'{pointer_space} {ptr.group("decl")}* {ptr.group("name")}')
                 continue
             rewritten.append(part)
 

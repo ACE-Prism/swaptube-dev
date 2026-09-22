@@ -136,6 +136,15 @@ extern "C" void draw_root_fractal(
     cudaMalloc(&d_green, alloc_size);
     cudaMalloc(&d_blue, alloc_size);
 
+    // The kernel accumulates into these, so they have to start at zero. cudaMalloc
+    // does not promise that, and because the buffers are freed and reallocated every
+    // frame the allocator hands back the previous frame's block: without this the
+    // plot accumulates across the whole render and visibly brightens.
+    cudaMemset(d_alpha, 0, alloc_size);
+    cudaMemset(d_red, 0, alloc_size);
+    cudaMemset(d_green, 0, alloc_size);
+    cudaMemset(d_blue, 0, alloc_size);
+
     cuFloatComplex dc1 = make_cuFloatComplex(c1.real(), c1.imag());
     cuFloatComplex dc2 = make_cuFloatComplex(c2.real(), c2.imag());
 

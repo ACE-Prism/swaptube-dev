@@ -52,19 +52,29 @@ Measured on an M4 at 640x360, whole-render wall time:
 
 | Demo | CPU | Metal | |
 |------|-----|-------|-|
+| `RootFractalDemo` | >24min | 17.3s | >80x |
 | `VolumetricFractalDemo` | 546.2s | 3.5s | 155x |
 | `MandelbulbDemo` | 79.5s | 2.3s | 34x |
 | `Fractal2DDemo` | 9.2s | 0.7s | 14x |
 | `MandelbrotDemo` | 2.6s | 0.7s | 4x |
 
-The last two are dominated by encoding and startup rather than by the kernel.
+`RootFractalDemo` is a lower bound: its CPU reference was still running after 24
+minutes. The bottom two are dominated by encoding and startup rather than by the
+kernel.
+
+`argb_to_p010` is ported too, which is not a heavy kernel but is the only one
+every frame of every project runs. It was 51% of `LatexDemo`'s kernel time and 89%
+of `GeometryDemo`'s, and moving it takes `LatexDemo` at 720p from 1.11s to 0.78s.
 
 `SWAPTUBE_DISABLE_METAL=1` routes every ported kernel back to its CPU
 implementation without rebuilding, which is how the two are compared.
-`MandelbrotDemo` matches byte for byte. The raymarchers do not: a one-ulp
-difference in a transcendental changes which iteration a ray terminates on, so
-pixels along the fractal boundary differ, at a mean absolute error below 1/255
-over the frame. Structure, lighting and colour are unchanged.
+`MandelbrotDemo` and `argb_to_p010` match byte for byte. The raymarchers do not: a
+one-ulp difference in a transcendental changes which iteration a ray terminates
+on, so pixels along the fractal boundary differ, at a mean absolute error below
+1/255 over the frame. `root_fractal` diverges for the same reason one step
+removed, since thousands of gradient contributions are summed in a different order
+and `sigmoid(sigmoid(x))` amplifies the result. Structure, lighting and colour are
+unchanged in all cases.
 
 Shaders are compiled from source at startup rather than into a `.metallib`,
 because `xcrun metal` ships only with full Xcode while the runtime compilation
